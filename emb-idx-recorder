@@ -1,0 +1,124 @@
+diff --git a/intel_extension_for_pytorch/nn/modules/merged_embeddingbag.py b/intel_extension_for_pytorch/nn/modules/merged_embeddingbag.py
+index 6013d326..747db035 100644
+--- a/intel_extension_for_pytorch/nn/modules/merged_embeddingbag.py
++++ b/intel_extension_for_pytorch/nn/modules/merged_embeddingbag.py
+@@ -684,6 +684,111 @@ def sparse_all2all(
+     dist.barrier()
+     return recv_idx, recv_buf, recv_ofs
+ 
++import json
++
++
++class EmbeddingIdxRecorder(object):
++    def __init__(self):
++        self.rank = -1
++        self.row_offset = []
++        self.num_hots = [3,2,1,2,6,1,1,1,1,7,3,8,1,6,9,5,1,1,1,12,100,27,10,3,1,1]
++        self.n_tables = 26
++        self.fw_look_up = {}
++        self.fw_reduce = {}
++        self.fw_exchange = {}
++        self.bw_scatter = {}
++        self.bw_reduce = {}
++        self.bw_exchange = {}
++        self.fw_helper = {}
++        self.bw_helper = {}
++        self.world_size = -1
++        self.create = False
++        self.iter = 0
++        self.gbs = 0
++        self.lbs = 0
++    
++    def record_raw_input(self, indices, world_size, row_offset, rank):
++        if not self.create:
++            self.init(world_size, row_offset, indices, rank)
++            self.create = True
++        else:
++            self.anylyze(indices)
++
++    def init(self, world_size, row_offset, indices, rank):
++        self.rank = rank
++        self.world_size = world_size
++        self.row_offset = row_offset
++        self.gbs = int(indices[0].numel() / self.num_hots[0])
++        self.lbs = int(self.gbs / self.world_size)
++        for w in range(self.world_size):
++            self.fw_look_up[w] = 0
++            self.fw_reduce[w] = 0
++            self.bw_scatter[w] = 0
++            self.bw_reduce[w] = 0
++            self.fw_exchange[w] = {}
++            self.bw_exchange[w] = {}
++            for w2 in range(self.world_size):
++                self.fw_exchange[w][w2] = 0
++                self.bw_exchange[w][w2] = 0
++
++    def init_helper(self):
++        helper = {}
++        for w in range(self.world_size):
++            helper[w] = {}
++            for w2 in range(self.world_size):
++                helper[w][w2] = set()
++        return helper
++
++    def save(self):
++        print(self.fw_look_up, self.fw_reduce, self.fw_exchange, self.bw_scatter, self.bw_reduce, self.bw_exchange)
++        if self.rank == 0:
++            import pickle
++            file = open(f"./emb-idx-data-iter{self.iter}.pickle", 'wb')
++            pickle.dump([self.fw_look_up, self.fw_reduce, self.fw_exchange, self.bw_scatter, self.bw_reduce, self.bw_exchange], file)
++            file.close()
++
++    def anylyze(self, indices):
++        self.bw_helper = self.init_helper()
++        self.fw_helper = self.init_helper()
++        self.iter += 1
++        for w in range(self.world_size):
++            for b in range(self.lbs):
++                gb = b + w * self.lbs
++                for table_id, indices_p_table in enumerate(indices):
++                    t_gb = table_id + gb * self.n_tables
++                    idx_start = gb * self.num_hots[table_id]
++                    idx_end = (gb + 1) * self.num_hots[table_id]
++                    for idx in range(idx_start, idx_end):
++                        idx_v = indices_p_table[idx].item() + self.row_offset[table_id]
++                        rank = idx_v % self.world_size
++                        self.fw_look_up[rank] += 1
++                        if t_gb not in self.fw_helper[rank][w]:
++                            self.fw_exchange[rank][w] += 1
++                            self.fw_reduce[w] += 1
++                            self.fw_helper[rank][w].add(t_gb)
++                        self.bw_scatter[w] += 1
++                        if idx_v not in self.bw_helper[w][rank]:
++                            self.bw_exchange[w][rank] += 1
++                            self.bw_reduce[rank] += 1
++                            self.bw_helper[w][rank].add(idx_v)
++
++        if self.iter == 1:
++            self.save()
++
++        if self.iter == 10:
++            self.save()
++
++        if self.iter == 100:
++            self.save()
++
++        if self.iter == 1000:
++            self.save()
++
++        if self.iter == 10000:
++            self.save()
++            exit()
++
++emb_recorder = EmbeddingIdxRecorder()
+ 
+ class DistMergeEmbeddingBagFunc(Function):
+     @staticmethod
+@@ -719,6 +824,7 @@ class DistMergeEmbeddingBagFunc(Function):
+         ) = torch.ops.torch_ipex.mergedemb_distribute_forward_local(
+             weight, row_offset, indices, offsets, rank, world_size, include_last_offsets
+         )
++        emb_recorder.record_raw_input(indices, world_size, row_offset, rank)
+         recv_idx, recv_buf, recv_ofs = sparse_all2all(
+             world_size, send_idx, send_buf, send_ofs
+         )
