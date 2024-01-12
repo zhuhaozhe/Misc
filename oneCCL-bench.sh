@@ -1,4 +1,4 @@
-export ONECCL_HOME=/home/pytorch/haozhe/torch-ccl-bench/oneCCL/build/_install
+# export ONECCL_HOME=/home/pytorch/haozhe/torch-ccl-bench/oneCCL/build/_install
 source ${ONECCL_HOME}/env/setvars.sh
 export LD_PRELOAD=${CONDA_PREFIX}/lib/libtcmalloc.so:{CONDA_PREFIX}/lib/libiomp5.so
 export WRAM_UP_ITRES=${WRAM_UP_ITRES:-1000}
