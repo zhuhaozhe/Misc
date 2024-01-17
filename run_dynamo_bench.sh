@@ -22,7 +22,7 @@ do
   export SUITE=$suite
   echo $SUITE
   export LOG_BASE=`date +%m%d%H%M%S`
-  export LOG_BASE=${LOG_BASE}_${DT}
+  export LOG_BASE=${LOG_BASE}_${DT}_${EXTRA}
   mkdir $LOG_BASE
   multi_threads_test
 done
