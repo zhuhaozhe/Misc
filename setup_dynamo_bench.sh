@@ -11,7 +11,7 @@ cd pytorch
 git checkout gh/zhuhaozhe/4/orig
 git submodule update --init --recursive
 conda install cmake ninja -y
-# Run this command from the PyTorch directory after cloning the source code using the “Get the PyTorch Source“ section below
+conda install intel::mkl-static intel::mkl-include
 pip install -r requirements.txt
 CMAKE_PREFIX_PATH=${CONDA_PREFIX:-"$(dirname $(which conda))/../"} python setup.py develop
 
@@ -19,7 +19,6 @@ cd ../
 git clone https://github.com/pytorch/vision.git
 cd vision
 git submodule update --init --recursive
-pip install -r requirements.txt
 python setup.py develop
 
 cd ../
