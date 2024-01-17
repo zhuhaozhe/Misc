@@ -11,7 +11,7 @@ cd pytorch
 git checkout gh/zhuhaozhe/4/orig
 git submodule update --init --recursive
 conda install cmake ninja -y
-conda install intel::mkl-static intel::mkl-include
+conda install intel::mkl-static intel::mkl-include -y
 pip install -r requirements.txt
 CMAKE_PREFIX_PATH=${CONDA_PREFIX:-"$(dirname $(which conda))/../"} python setup.py develop
 
