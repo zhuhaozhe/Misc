@@ -11,16 +11,19 @@ multi_threads_test() {
 }
 
 SCENARIO=performance
-DT=float32
 export TORCHINDUCTOR_FREEZING=1
 Flag_extra="--freezing"
 Mode_extra="--inference"
 
+for DT in float32 amp
+do
 for suite in timm_models huggingface torchbench
 do
   export SUITE=$suite
   echo $SUITE
   export LOG_BASE=`date +%m%d%H%M%S`
+  export LOG_BASE=${LOG_BASE}_${DT}
   mkdir $LOG_BASE
   multi_threads_test
+done
 done
