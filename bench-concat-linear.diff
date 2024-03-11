@@ -1,0 +1,419 @@
+commit 48e3cfd55b4c703d5d388be874af7763ca33f3b7
+Author: haozhe.zhu <haozhe.zhu@intel.com>
+Date:   Sun Mar 10 22:03:03 2024 -0700
+
+    test-concat-linear
+
+diff --git a/bench-concat-linear.sh b/bench-concat-linear.sh
+new file mode 100644
+index 000000000..6bfee2b72
+--- /dev/null
++++ b/bench-concat-linear.sh
+@@ -0,0 +1,31 @@
++bench(){
++    for PRECISION in bf16
++    do
++        for CONCAT_LINEAR in 0 1
++        do
++            for TORCH_INDUCTOR in 0 1
++            do
++                for TORCH_PROFILE in 0
++                do
++                export PRECISION=$PRECISION
++                export CONCAT_LINEAR=$CONCAT_LINEAR
++                export TORCH_INDUCTOR=$TORCH_INDUCTOR
++                export TORCH_PROFILE=$TORCH_PROFILE
++                echo "start CONCAT_LINEAR: $CONCAT_LINEAR, TORCH_INDUCTOR: $TORCH_INDUCTOR, TORCH_PROFILE: $TORCH_PROFILE, PRECISION: $PRECISION"
++                cd /home/haozhe/dev/frameworks.ai.models.intel-models/quickstart/diffusion/pytorch/stable_diffusion/inference/cpu
++                bash bench.sh
++                # cd /home/haozhe/dev/frameworks.ai.models.intel-models/quickstart/image_classification/pytorch/vit/inference/cpu
++                # bash bench.sh
++                # cd /home/haozhe/dev/frameworks.ai.models.intel-models/quickstart/language_modeling/pytorch/bert_large/inference/cpu
++                # bash bench.sh
++                # cd /home/haozhe/dev/frameworks.ai.models.intel-models/quickstart/language_modeling/pytorch/distilbert_base/inference/cpu
++                # bash bench.sh
++                done
++            done
++        done
++    done
++}
++
++bench
++bench
++bench
+\ No newline at end of file
+diff --git a/models/diffusion/pytorch/stable_diffusion/inference.py b/models/diffusion/pytorch/stable_diffusion/inference.py
+index 9e9c4a1ba..5d646bd8b 100755
+--- a/models/diffusion/pytorch/stable_diffusion/inference.py
++++ b/models/diffusion/pytorch/stable_diffusion/inference.py
+@@ -368,9 +368,10 @@ def main():
+         print(f"FID: {float(fid.compute())}")
+ 
+     # profile
+-    if args.profile:
++    enable_profile = os.environ.get("TORCH_PROFILE") == '1'
++    if args.profile or enable_profile:
+         print("Running profiling ...")
+-        with torch.profiler.profile(activities=[torch.profiler.ProfilerActivity.CPU], record_shapes=True) as p:
++        with torch.profiler.profile(activities=[torch.profiler.ProfilerActivity.CPU], record_shapes=False) as p:
+             if args.precision == "bf16" or args.precision == "fp16" or args.precision == "int8-bf16":
+                 with torch.cpu.amp.autocast(dtype=args.dtype), torch.no_grad():
+                     pipe(args.prompt, generator=torch.manual_seed(args.seed)).images
+diff --git a/quickstart/diffusion/pytorch/stable_diffusion/inference/cpu/bench.sh b/quickstart/diffusion/pytorch/stable_diffusion/inference/cpu/bench.sh
+new file mode 100644
+index 000000000..e80b90599
+--- /dev/null
++++ b/quickstart/diffusion/pytorch/stable_diffusion/inference/cpu/bench.sh
+@@ -0,0 +1,32 @@
++export OUTPUT_DIR=./
++export MODEL_DIR=/home/haozhe/dev/frameworks.ai.models.intel-models
++
++export DATASET_DIR=/data/datasets/lz_dataset/coco/val2017
++
++export args=""
++if [ $PRECISION = "fp32" ]
++then
++    export arg="$arg fp32"
++else
++    export arg="$arg bf16"
++fi
++if [ $TORCH_INDUCTOR -eq 1 ]
++then
++    export arg="$arg compile-inductor"
++else
++    export arg="$arg ipex-jit"
++fi
++echo "Running SD, CONCAT_LINEAR: $CONCAT_LINEAR, TORCH_INDUCTOR: $TORCH_INDUCTOR, TORCH_PROFILE: $TORCH_PROFILE, arg: $arg"
++sudo sh -c 'echo 3 > /proc/sys/vm/drop_caches'
++bash inference_throughput.sh $arg 2>&1 |tee throughtput-PRECISION-${PRECISION}-CONCAT_LINEAR-${CONCAT_LINEAR}-TORCH_INDUCTOR-${TORCH_INDUCTOR}-TORCH_PROFILE-${TORCH_PROFILE}.log
++sudo sh -c 'echo 3 > /proc/sys/vm/drop_caches'
++if [ $TORCH_INDUCTOR -eq 1 ]
++then
++  if [ $TORCH_PROFILE -eq 1 ]
++  then
++    export TORCH_COMPILE_DEBUG=1
++  fi
++fi
++
++bash inference_realtime.sh $arg 2>&1 |tee realtime-PRECISION-${PRECISION}-CONCAT_LINEAR-${CONCAT_LINEAR}-TORCH_INDUCTOR-${TORCH_INDUCTOR}-TORCH_PROFILE-${TORCH_PROFILE}.log
++unset TORCH_COMPILE_DEBUG
+\ No newline at end of file
+diff --git a/quickstart/diffusion/pytorch/stable_diffusion/inference/cpu/inference_realtime.sh b/quickstart/diffusion/pytorch/stable_diffusion/inference/cpu/inference_realtime.sh
+index f215d904f..89adc7b7b 100644
+--- a/quickstart/diffusion/pytorch/stable_diffusion/inference/cpu/inference_realtime.sh
++++ b/quickstart/diffusion/pytorch/stable_diffusion/inference/cpu/inference_realtime.sh
+@@ -101,7 +101,7 @@ rm -rf ${OUTPUT_DIR}/stable_diffusion_${PRECISION}_inference_realtime*
+ 
+ python -m intel_extension_for_pytorch.cpu.launch \
+     --memory-allocator jemalloc \
+-    --ninstances $NUMAS \
++    --nodes-list 4 \
+     --log-dir ${OUTPUT_DIR} \
+     --log_file_prefix stable_diffusion_${PRECISION}_inference_realtime \
+     ${MODEL_DIR}/models/diffusion/pytorch/stable_diffusion/inference.py \
+@@ -130,6 +130,6 @@ BEGIN {
+       }
+ END   {
+         sum = sum / i * INSTANCES_PER_SOCKET;
+-        printf("%.3f", sum);
++        printf("%.5f", sum);
+ }')
+-echo ""stable_diffusion";"latency";$1;${throughput}" | tee -a ${OUTPUT_DIR}/summary.log
++echo ""stable_diffusion";"latency";concat, $CONCAT_LINEAR, inductor, $TORCH_INDUCTOR, prof, $TORCH_PROFILE, $1;${throughput}" | tee -a ${OUTPUT_DIR}/summary.log
+diff --git a/quickstart/diffusion/pytorch/stable_diffusion/inference/cpu/inference_throughput.sh b/quickstart/diffusion/pytorch/stable_diffusion/inference/cpu/inference_throughput.sh
+index 10fe29e25..5da5dd0c0 100644
+--- a/quickstart/diffusion/pytorch/stable_diffusion/inference/cpu/inference_throughput.sh
++++ b/quickstart/diffusion/pytorch/stable_diffusion/inference/cpu/inference_throughput.sh
+@@ -91,7 +91,7 @@ rm -rf ${OUTPUT_DIR}/stable_diffusion_${PRECISION}_inference_throughput*
+ 
+ python -m intel_extension_for_pytorch.cpu.launch \
+     --memory-allocator jemalloc \
+-    --throughput_mode \
++    --nodes-list 4  \
+     --log-dir ${OUTPUT_DIR} \
+     --log_file_prefix stable_diffusion_${PRECISION}_inference_throughput \
+     ${MODEL_DIR}/models/diffusion/pytorch/stable_diffusion/inference.py \
+@@ -114,6 +114,6 @@ BEGIN {
+       }
+ END   {
+         sum = sum / i;
+-        printf("%.3f", sum);
++        printf("%.5f", sum);
+ }')
+-echo ""stable_diffusion";"throughput";$1;${throughput}" | tee -a ${OUTPUT_DIR}/summary.log
++echo ""stable_diffusion";"throughput";concat, $CONCAT_LINEAR, inductor, $TORCH_INDUCTOR, prof, $TORCH_PROFILE, $1;${throughput}" | tee -a ${OUTPUT_DIR}/summary.log
+diff --git a/quickstart/image_classification/pytorch/vit/inference/cpu/bench.sh b/quickstart/image_classification/pytorch/vit/inference/cpu/bench.sh
+new file mode 100644
+index 000000000..de230bd63
+--- /dev/null
++++ b/quickstart/image_classification/pytorch/vit/inference/cpu/bench.sh
+@@ -0,0 +1,24 @@
++export OUTPUT_DIR=./
++export EVAL_SCRIPT=/home/haozhe/dev/frameworks.ai.models.intel-models/quickstart/language_modeling/pytorch/bert_large/inference/cpu/transformers/examples/pytorch/image-classification/run_image_classification.py
++export HF_DATASETS_CACHE=/data/bzheng/
++if [ $PRECISION = "fp32" ]
++then
++    export arg="$arg fp32"
++else
++    export arg="$arg bf16"
++fi
++echo "Running VIT, CONCAT_LINEAR: $CONCAT_LINEAR, TORCH_INDUCTOR: $TORCH_INDUCTOR, TORCH_PROFILE: $TORCH_PROFILE, arg: $arg"
++sudo sh -c 'echo 3 > /proc/sys/vm/drop_caches'
++bash run_multi_instance_throughput.sh $arg 2>&1 |tee throughtput-PRECISION-${PRECISION}-CONCAT_LINEAR-${CONCAT_LINEAR}-TORCH_INDUCTOR-${TORCH_INDUCTOR}-TORCH_PROFILE-${TORCH_PROFILE}.log
++export CORE_PER_INSTANCE=4
++sudo sh -c 'echo 3 > /proc/sys/vm/drop_caches'
++if [ $TORCH_INDUCTOR -eq 1 ]
++then
++  if [ $TORCH_PROFILE -eq 1 ]
++  then
++    export TORCH_COMPILE_DEBUG=1
++  fi
++fi
++bash run_multi_instance_realtime.sh $arg 2>&1 |tee realtime-PRECISION-${PRECISION}-CONCAT_LINEAR-${CONCAT_LINEAR}-TORCH_INDUCTOR-${TORCH_INDUCTOR}-TORCH_PROFILE-${TORCH_PROFILE}.log
++unset CORE_PER_INSTANCE
++unset TORCH_COMPILE_DEBUG
+\ No newline at end of file
+diff --git a/quickstart/image_classification/pytorch/vit/inference/cpu/run_multi_instance_realtime.sh b/quickstart/image_classification/pytorch/vit/inference/cpu/run_multi_instance_realtime.sh
+index 433a0b8c4..c0162738b 100755
+--- a/quickstart/image_classification/pytorch/vit/inference/cpu/run_multi_instance_realtime.sh
++++ b/quickstart/image_classification/pytorch/vit/inference/cpu/run_multi_instance_realtime.sh
+@@ -88,7 +88,7 @@ if [[ "0" == ${TORCH_INDUCTOR} ]];then
+     mode="jit"
+     ARGS="$ARGS --jit_mode_eval"
+     echo "### running with jit mode"
+-    python -m intel_extension_for_pytorch.cpu.launch --throughput-mode --enable_tcmalloc --log_path=${OUTPUT_DIR} --log_file_prefix="./latency_log_${precision}_${mode}" \
++    python -m intel_extension_for_pytorch.cpu.launch --nodes-list 4 --enable_tcmalloc --log_path=${OUTPUT_DIR} --log_file_prefix="./latency_log_${precision}_${mode}" \
+         ${EVAL_SCRIPT} $ARGS \
+         --model_name_or_path   ${FINETUNED_MODEL} \
+         --do_eval \
+@@ -99,7 +99,7 @@ if [[ "0" == ${TORCH_INDUCTOR} ]];then
+ else
+     echo "Running inference with torch.compile inductor backend."
+     export TORCHINDUCTOR_FREEZING=1
+-    python -m intel_extension_for_pytorch.cpu.launch --throughput-mode --enable_tcmalloc --log_path=${OUTPUT_DIR} --log_file_prefix="./latency_log_${precision}_${mode}" \
++    python -m intel_extension_for_pytorch.cpu.launch --nodes-list 4 --enable_tcmalloc --log_path=${OUTPUT_DIR} --log_file_prefix="./latency_log_${precision}_${mode}" \
+         ${EVAL_SCRIPT} $ARGS \
+         --inductor \
+         --model_name_or_path   ${FINETUNED_MODEL} \
+@@ -144,5 +144,5 @@ END   {
+ }')
+ 
+ echo $INSTANCES_PER_SOCKET
+-echo ""vit-base";"latency";${precision};${BATCH_SIZE};${throughput}" | tee -a ${WORK_SPACE}/summary.log
+-echo ""vit-base";"p99_latency";${precision};${BATCH_SIZE};${p99_latency}" | tee -a ${WORK_SPACE}/summary.log
++echo ""vit-base";"latency";concat, $CONCAT_LINEAR, inductor, $TORCH_INDUCTOR, prof, $TORCH_PROFILE, ${precision};${BATCH_SIZE};${throughput}" | tee -a ${WORK_SPACE}/summary.log
++echo ""vit-base";"p99_latency";concat, $CONCAT_LINEAR, inductor, $TORCH_INDUCTOR, prof, $TORCH_PROFILE, ${precision};${BATCH_SIZE};${p99_latency}" | tee -a ${WORK_SPACE}/summary.log
+diff --git a/quickstart/image_classification/pytorch/vit/inference/cpu/run_multi_instance_throughput.sh b/quickstart/image_classification/pytorch/vit/inference/cpu/run_multi_instance_throughput.sh
+index a00c758fb..cbbc039c3 100755
+--- a/quickstart/image_classification/pytorch/vit/inference/cpu/run_multi_instance_throughput.sh
++++ b/quickstart/image_classification/pytorch/vit/inference/cpu/run_multi_instance_throughput.sh
+@@ -80,7 +80,7 @@ if [[ "0" == ${TORCH_INDUCTOR} ]];then
+     mode="jit"
+     ARGS="$ARGS --jit_mode_eval"
+     echo "### running with jit mode"
+-    python -m intel_extension_for_pytorch.cpu.launch --throughput-mode --enable_tcmalloc --log_path=${OUTPUT_DIR} --log_file_prefix="./throughput_log_${path}_${precision}_${mode}" \
++    python -m intel_extension_for_pytorch.cpu.launch --nodes-list 4  --enable_tcmalloc --log_path=${OUTPUT_DIR} --log_file_prefix="./throughput_log_${path}_${precision}_${mode}" \
+         ${EVAL_SCRIPT} $ARGS \
+         --model_name_or_path   ${FINETUNED_MODEL} \
+         --do_eval \
+@@ -91,7 +91,7 @@ if [[ "0" == ${TORCH_INDUCTOR} ]];then
+ else
+     echo "Running inference with torch.compile inductor backend."
+     export TORCHINDUCTOR_FREEZING=1
+-    python -m intel_extension_for_pytorch.cpu.launch --throughput-mode --enable_tcmalloc --log_path=${OUTPUT_DIR} --log_file_prefix="./throughput_log_${path}_${precision}_${mode}" \
++    python -m intel_extension_for_pytorch.cpu.launch --nodes-list 4  --enable_tcmalloc --log_path=${OUTPUT_DIR} --log_file_prefix="./throughput_log_${path}_${precision}_${mode}" \
+         ${EVAL_SCRIPT} $ARGS \
+         --inductor \
+         --model_name_or_path   ${FINETUNED_MODEL} \
+@@ -115,4 +115,4 @@ END   {
+ sum = sum / i;
+ printf("%.3f", sum);
+ }')
+-echo ""vit-base";"throughput";${precision};${BATCH_SIZE};${throughput}" | tee -a ${WORK_SPACE}/summary.log
++echo ""vit-base";"throughput";concat, $CONCAT_LINEAR, inductor, $TORCH_INDUCTOR, prof, $TORCH_PROFILE, ${precision};${BATCH_SIZE};${throughput}" | tee -a ${WORK_SPACE}/summary.log
+diff --git a/quickstart/language_modeling/pytorch/bert_large/inference/cpu/bench.sh b/quickstart/language_modeling/pytorch/bert_large/inference/cpu/bench.sh
+new file mode 100644
+index 000000000..cd9051432
+--- /dev/null
++++ b/quickstart/language_modeling/pytorch/bert_large/inference/cpu/bench.sh
+@@ -0,0 +1,16 @@
++export EVAL_DATA_FILE=./dev-v1.1.json
++export OUTPUT_DIR=./
++
++echo "Running BERT, CONCAT_LINEAR: $CONCAT_LINEAR, TORCH_INDUCTOR: $TORCH_INDUCTOR, TORCH_PROFILE: $TORCH_PROFILE, arg: $arg"
++sudo sh -c 'echo 3 > /proc/sys/vm/drop_caches'
++bash run_multi_instance_throughput.sh $arg 2>&1 |tee throughtput-PRECISION-${PRECISION}-CONCAT_LINEAR-${CONCAT_LINEAR}-TORCH_INDUCTOR-${TORCH_INDUCTOR}-TORCH_PROFILE-${TORCH_PROFILE}.log
++sudo sh -c 'echo 3 > /proc/sys/vm/drop_caches'
++if [ $TORCH_INDUCTOR -eq 1 ]
++then
++  if [ $TORCH_PROFILE -eq 1 ]
++  then
++    export TORCH_COMPILE_DEBUG=1
++  fi
++fi
++bash run_multi_instance_realtime.sh $arg 2>&1 |tee realtime-PRECISION-${PRECISION}-CONCAT_LINEAR-${CONCAT_LINEAR}-TORCH_INDUCTOR-${TORCH_INDUCTOR}-TORCH_PROFILE-${TORCH_PROFILE}.log
++unset TORCH_COMPILE_DEBUG
+\ No newline at end of file
+diff --git a/quickstart/language_modeling/pytorch/bert_large/inference/cpu/run_multi_instance_realtime.sh b/quickstart/language_modeling/pytorch/bert_large/inference/cpu/run_multi_instance_realtime.sh
+index 251bc2895..50da491bd 100755
+--- a/quickstart/language_modeling/pytorch/bert_large/inference/cpu/run_multi_instance_realtime.sh
++++ b/quickstart/language_modeling/pytorch/bert_large/inference/cpu/run_multi_instance_realtime.sh
+@@ -69,11 +69,11 @@ work_space=${work_space:-${OUTPUT_DIR}}
+ 
+ TORCH_INDUCTOR=${TORCH_INDUCTOR:-"0"}
+ if [[ "0" == ${TORCH_INDUCTOR} ]];then
+-    python -m intel_extension_for_pytorch.cpu.launch --ninstance ${NUMAS} --log_path=${OUTPUT_DIR} --log_file_prefix="./latency_log_${precision}" ${EVAL_SCRIPT} $ARGS --model_type bert --model_name_or_path ${FINETUNED_MODEL} --tokenizer_name bert-large-uncased-whole-word-masking-finetuned-squad  --do_eval --do_lower_case --predict_file $EVAL_DATA_FILE  --per_gpu_eval_batch_size $BATCH_SIZE --learning_rate 3e-5 --num_train_epochs 2.0 --max_seq_length 384 --doc_stride 128 --output_dir ./tmp --perf_begin_iter 20 --perf_run_iters 100 --use_jit --ipex --int8_config ${INT8_CONFIG} --use_share_weight --total_cores ${CORES_PER_NUMA}
++    python -m intel_extension_for_pytorch.cpu.launch --nodes-list 4 --log_path=${OUTPUT_DIR} --log_file_prefix="./latency_log_${precision}" ${EVAL_SCRIPT} $ARGS --model_type bert --model_name_or_path ${FINETUNED_MODEL} --tokenizer_name bert-large-uncased-whole-word-masking-finetuned-squad  --do_eval --do_lower_case --predict_file $EVAL_DATA_FILE  --per_gpu_eval_batch_size $BATCH_SIZE --learning_rate 3e-5 --num_train_epochs 2.0 --max_seq_length 384 --doc_stride 128 --output_dir ./tmp --perf_begin_iter 20 --perf_run_iters 100 --use_jit --ipex --int8_config ${INT8_CONFIG} --use_share_weight --total_cores ${CORES_PER_NUMA}
+ else
+     echo "Running Bert_Large inference with torch.compile() indutor backend enabled."
+     export TORCHINDUCTOR_FREEZING=1
+-    python -m intel_extension_for_pytorch.cpu.launch --ninstance ${NUMAS} --log_path=${OUTPUT_DIR} --log_file_prefix="./latency_log_${precision}" ${EVAL_SCRIPT} $ARGS --model_type bert --model_name_or_path ${FINETUNED_MODEL} --tokenizer_name bert-large-uncased-whole-word-masking-finetuned-squad  --do_eval --do_lower_case --predict_file $EVAL_DATA_FILE  --per_gpu_eval_batch_size $BATCH_SIZE --learning_rate 3e-5 --num_train_epochs 2.0 --max_seq_length 384 --doc_stride 128 --output_dir ./tmp --perf_begin_iter 20 --perf_run_iters 100 --inductor --int8_config ${INT8_CONFIG} --use_share_weight --total_cores ${CORES_PER_NUMA}
++    python -m intel_extension_for_pytorch.cpu.launch --nodes-list 4 --log_path=${OUTPUT_DIR} --log_file_prefix="./latency_log_${precision}" ${EVAL_SCRIPT} $ARGS --model_type bert --model_name_or_path ${FINETUNED_MODEL} --tokenizer_name bert-large-uncased-whole-word-masking-finetuned-squad  --do_eval --do_lower_case --predict_file $EVAL_DATA_FILE  --per_gpu_eval_batch_size $BATCH_SIZE --learning_rate 3e-5 --num_train_epochs 2.0 --max_seq_length 384 --doc_stride 128 --output_dir ./tmp --perf_begin_iter 20 --perf_run_iters 100 --inductor --int8_config ${INT8_CONFIG} --use_share_weight --total_cores ${CORES_PER_NUMA}
+ fi
+ CORES_PER_INSTANCE=4
+ TOTAL_CORES=`expr $CORES \* $SOCKETS`
+@@ -108,5 +108,5 @@ END   {
+     printf("%.3f ms", sum);
+ }')
+ echo $INSTANCES_PER_SOCKET
+-echo ""BERT";"latency";${precision}; ${BATCH_SIZE};${throughput}" | tee -a ${OUTPUT_DIR}/summary.log
+-echo ""BERT";"p99_latency";${precision}; ${BATCH_SIZE};${p99_latency}" | tee -a ${OUTPUT_DIR}/summary.log
++echo ""BERT";"latency";concat, $CONCAT_LINEAR, inductor, $TORCH_INDUCTOR, prof, $TORCH_PROFILE, ${precision}; ${BATCH_SIZE};${throughput}" | tee -a ${OUTPUT_DIR}/summary.log
++echo ""BERT";"p99_latency";concat, $CONCAT_LINEAR, inductor, $TORCH_INDUCTOR, prof, $TORCH_PROFILE, ${precision}; ${BATCH_SIZE};${p99_latency}" | tee -a ${OUTPUT_DIR}/summary.log
+diff --git a/quickstart/language_modeling/pytorch/bert_large/inference/cpu/run_multi_instance_throughput.sh b/quickstart/language_modeling/pytorch/bert_large/inference/cpu/run_multi_instance_throughput.sh
+index 564d593b7..98a79507b 100755
+--- a/quickstart/language_modeling/pytorch/bert_large/inference/cpu/run_multi_instance_throughput.sh
++++ b/quickstart/language_modeling/pytorch/bert_large/inference/cpu/run_multi_instance_throughput.sh
+@@ -92,11 +92,11 @@ if [ ${WEIGHT_SHAREING} ]; then
+   done
+   wait
+ elif [[ "0" == ${TORCH_INDUCTOR} ]];then
+-  python -m intel_extension_for_pytorch.cpu.launch --throughput_mode --enable_jemalloc --log_path=${OUTPUT_DIR} --log_file_prefix="./throughput_log_${precision}" ${EVAL_SCRIPT} $ARGS --model_type bert --model_name_or_path ${FINETUNED_MODEL} --tokenizer_name bert-large-uncased-whole-word-masking-finetuned-squad  --do_eval --do_lower_case --predict_file $EVAL_DATA_FILE --per_gpu_eval_batch_size $BATCH_SIZE --learning_rate 3e-5 --num_train_epochs 2.0 --max_seq_length 384 --doc_stride 128 --output_dir ./tmp --perf_begin_iter 15 --use_jit --ipex --perf_run_iters 40 --int8_config ${INT8_CONFIG}
++  python -m intel_extension_for_pytorch.cpu.launch --nodes-list 4 --enable_jemalloc --log_path=${OUTPUT_DIR} --log_file_prefix="./throughput_log_${precision}" ${EVAL_SCRIPT} $ARGS --model_type bert --model_name_or_path ${FINETUNED_MODEL} --tokenizer_name bert-large-uncased-whole-word-masking-finetuned-squad  --do_eval --do_lower_case --predict_file $EVAL_DATA_FILE --per_gpu_eval_batch_size $BATCH_SIZE --learning_rate 3e-5 --num_train_epochs 2.0 --max_seq_length 384 --doc_stride 128 --output_dir ./tmp --perf_begin_iter 15 --use_jit --ipex --perf_run_iters 40 --int8_config ${INT8_CONFIG}
+ else
+   echo "Running Bert_Large inference with torch.compile() indutor backend enabled."
+   export TORCHINDUCTOR_FREEZING=1
+-  python -m intel_extension_for_pytorch.cpu.launch --throughput_mode --enable_jemalloc --log_path=${OUTPUT_DIR} --log_file_prefix="./throughput_log_${precision}" ${EVAL_SCRIPT} $ARGS --model_type bert --model_name_or_path ${FINETUNED_MODEL} --tokenizer_name bert-large-uncased-whole-word-masking-finetuned-squad  --do_eval --do_lower_case --predict_file $EVAL_DATA_FILE --per_gpu_eval_batch_size $BATCH_SIZE --learning_rate 3e-5 --num_train_epochs 2.0 --max_seq_length 384 --doc_stride 128 --output_dir ./tmp --perf_begin_iter 15 --inductor --perf_run_iters 40 --int8_config ${INT8_CONFIG}
++  python -m intel_extension_for_pytorch.cpu.launch --nodes-list 4 --enable_jemalloc --log_path=${OUTPUT_DIR} --log_file_prefix="./throughput_log_${precision}" ${EVAL_SCRIPT} $ARGS --model_type bert --model_name_or_path ${FINETUNED_MODEL} --tokenizer_name bert-large-uncased-whole-word-masking-finetuned-squad  --do_eval --do_lower_case --predict_file $EVAL_DATA_FILE --per_gpu_eval_batch_size $BATCH_SIZE --learning_rate 3e-5 --num_train_epochs 2.0 --max_seq_length 384 --doc_stride 128 --output_dir ./tmp --perf_begin_iter 15 --inductor --perf_run_iters 40 --int8_config ${INT8_CONFIG}
+ fi
+ 
+ throughput=$(grep 'Throughput:' ${OUTPUT_DIR}/throughput_log* |sed -e 's/.*Throughput//;s/[^0-9.]//g' |awk '
+@@ -112,4 +112,4 @@ END   {
+ sum = sum / i;
+ printf("%.3f", sum);
+ }')
+-echo ""BERT";"throughput";${precision}; ${BATCH_SIZE};${throughput}" | tee -a ${OUTPUT_DIR}/summary.log
++echo ""BERT";"throughput";concat, $CONCAT_LINEAR, inductor, $TORCH_INDUCTOR, prof, $TORCH_PROFILE, ${precision}; ${BATCH_SIZE};${throughput}" | tee -a ${OUTPUT_DIR}/summary.log
+diff --git a/quickstart/language_modeling/pytorch/distilbert_base/inference/cpu/bench.sh b/quickstart/language_modeling/pytorch/distilbert_base/inference/cpu/bench.sh
+new file mode 100644
+index 000000000..b0d6a6a87
+--- /dev/null
++++ b/quickstart/language_modeling/pytorch/distilbert_base/inference/cpu/bench.sh
+@@ -0,0 +1,23 @@
++# export FINETUNED_MODEL=$(pwd)/distilbert-base-uncased-finetuned-sst-2-english
++export OUTPUT_DIR=./
++export HF_DATASETS_OFFLINE=0
++export SEQUENCE_LENGTH=128 
++
++export DATASET_DIR=./
++export EVAL_SCRIPT=/home/haozhe/dev/frameworks.ai.models.intel-models/quickstart/language_modeling/pytorch/bert_large/inference/cpu/transformers/examples/pytorch/text-classification/run_glue.py
++
++echo "Running distilbert, CONCAT_LINEAR: $CONCAT_LINEAR, TORCH_INDUCTOR: $TORCH_INDUCTOR, TORCH_PROFILE: $TORCH_PROFILE, arg: $arg"
++sudo sh -c 'echo 3 > /proc/sys/vm/drop_caches'
++bash run_multi_instance_throughput.sh $arg 2>&1 |tee throughtput-PRECISION-${PRECISION}-CONCAT_LINEAR-${CONCAT_LINEAR}-TORCH_INDUCTOR-${TORCH_INDUCTOR}-TORCH_PROFILE-${TORCH_PROFILE}.log
++sudo sh -c 'echo 3 > /proc/sys/vm/drop_caches'
++export CORE_PER_INSTANCE=4
++if [ $TORCH_INDUCTOR -eq 1 ]
++then
++  if [ $TORCH_PROFILE -eq 1 ]
++  then
++    export TORCH_COMPILE_DEBUG=1
++  fi
++fi
++bash run_multi_instance_realtime.sh $arg 2>&1 |tee realtime-PRECISION-${PRECISION}-CONCAT_LINEAR-${CONCAT_LINEAR}-TORCH_INDUCTOR-${TORCH_INDUCTOR}-TORCH_PROFILE-${TORCH_PROFILE}.log
++unset CORE_PER_INSTANCE
++unset TORCH_COMPILE_DEBUG
+\ No newline at end of file
+diff --git a/quickstart/language_modeling/pytorch/distilbert_base/inference/cpu/run_multi_instance_realtime.sh b/quickstart/language_modeling/pytorch/distilbert_base/inference/cpu/run_multi_instance_realtime.sh
+index 9581e2cd4..fb363f65d 100755
+--- a/quickstart/language_modeling/pytorch/distilbert_base/inference/cpu/run_multi_instance_realtime.sh
++++ b/quickstart/language_modeling/pytorch/distilbert_base/inference/cpu/run_multi_instance_realtime.sh
+@@ -92,7 +92,7 @@ if [[ "0" == ${TORCH_INDUCTOR} ]];then
+     mode="jit"
+     ARGS="$ARGS --jit_mode_eval"
+     echo "### running with jit mode"
+-    python -m intel_extension_for_pytorch.cpu.launch --ninstances $NUMAS --enable_jemalloc --log_path=${OUTPUT_DIR} --log_file_prefix="./latency_log_${precision}_${mode}" \
++    python -m intel_extension_for_pytorch.cpu.launch --nodes-list 4 --enable_jemalloc --log_path=${OUTPUT_DIR} --log_file_prefix="./latency_log_${precision}_${mode}" \
+         ${EVAL_SCRIPT} $ARGS \
+         --use_ipex \
+         --model_name_or_path   ${FINETUNED_MODEL} \
+@@ -105,7 +105,7 @@ else
+     echo "Running inference with torch.compile inductor backend."
+     export TORCHINDUCTOR_FREEZING=1
+     ARGS="$ARGS --inductor"
+-    python -m intel_extension_for_pytorch.cpu.launch --ninstances $NUMAS --enable_jemalloc --log_path=${OUTPUT_DIR} --log_file_prefix="./latency_log_${precision}_${mode}" \
++    python -m intel_extension_for_pytorch.cpu.launch --nodes-list 4 --enable_jemalloc --log_path=${OUTPUT_DIR} --log_file_prefix="./latency_log_${precision}_${mode}" \
+         ${EVAL_SCRIPT} $ARGS \
+         --model_name_or_path   ${FINETUNED_MODEL} \
+         --task_name sst2 \
+@@ -149,5 +149,5 @@ END   {
+ }')
+ 
+ echo $INSTANCES_PER_SOCKET
+-echo ""distilbert-base";"latency";${precision};${BATCH_SIZE};${throughput}" | tee -a ${WORK_SPACE}/summary.log
+-echo ""distilbert-base";"p99_latency";${precision};${BATCH_SIZE};${p99_latency}" | tee -a ${WORK_SPACE}/summary.log
++echo ""distilbert-base";"latency";concat, $CONCAT_LINEAR, inductor, $TORCH_INDUCTOR, prof, $TORCH_PROFILE, ${precision};${BATCH_SIZE};${throughput}" | tee -a ${WORK_SPACE}/summary.log
++echo ""distilbert-base";"p99_latency";concat, $CONCAT_LINEAR, inductor, $TORCH_INDUCTOR, prof, $TORCH_PROFILE, ${precision};${BATCH_SIZE};${p99_latency}" | tee -a ${WORK_SPACE}/summary.log
+diff --git a/quickstart/language_modeling/pytorch/distilbert_base/inference/cpu/run_multi_instance_throughput.sh b/quickstart/language_modeling/pytorch/distilbert_base/inference/cpu/run_multi_instance_throughput.sh
+index 02baf1b38..d6e62e4b6 100755
+--- a/quickstart/language_modeling/pytorch/distilbert_base/inference/cpu/run_multi_instance_throughput.sh
++++ b/quickstart/language_modeling/pytorch/distilbert_base/inference/cpu/run_multi_instance_throughput.sh
+@@ -84,7 +84,7 @@ if [[ "0" == ${TORCH_INDUCTOR} ]];then
+     mode="jit"
+     ARGS="$ARGS --jit_mode_eval"
+     echo "### running with jit mode"
+-    python -m intel_extension_for_pytorch.cpu.launch --throughput_mode  --enable_jemalloc --log_path=${OUTPUT_DIR} --log_file_prefix="./throughput_log_${path}_${precision}_${mode}" \
++    python -m intel_extension_for_pytorch.cpu.launch --nodes-list 4  --enable_jemalloc --log_path=${OUTPUT_DIR} --log_file_prefix="./throughput_log_${path}_${precision}_${mode}" \
+         ${EVAL_SCRIPT} $ARGS \
+         --use_ipex \
+         --model_name_or_path   ${FINETUNED_MODEL} \
+@@ -98,7 +98,7 @@ else
+     echo "Running inference with torch.compile inductor backend."
+     export TORCHINDUCTOR_FREEZING=1
+     ARGS="$ARGS --inductor"
+-    python -m intel_extension_for_pytorch.cpu.launch --throughput_mode  --enable_jemalloc --log_path=${OUTPUT_DIR} --log_file_prefix="./throughput_log_${path}_${precision}_${mode}" \
++    python -m intel_extension_for_pytorch.cpu.launch --nodes-list 4  --enable_jemalloc --log_path=${OUTPUT_DIR} --log_file_prefix="./throughput_log_${path}_${precision}_${mode}" \
+         ${EVAL_SCRIPT} $ARGS \
+         --model_name_or_path   ${FINETUNED_MODEL} \
+         --task_name sst2 \
+@@ -122,4 +122,4 @@ END   {
+ sum = sum / i;
+ printf("%.3f", sum);
+ }')
+-echo ""distilbert-base";"throughput";${precision};${BATCH_SIZE};${throughput}" | tee -a ${WORK_SPACE}/summary.log
++echo ""distilbert-base";"throughput";concat, $CONCAT_LINEAR, inductor, $TORCH_INDUCTOR, prof, $TORCH_PROFILE, ${precision};${BATCH_SIZE};${throughput}" | tee -a ${WORK_SPACE}/summary.log
+diff --git a/test-concat-linear-ipex.diff b/test-concat-linear-ipex.diff
+new file mode 100644
+index 000000000..4060e65d3
+--- /dev/null
++++ b/test-concat-linear-ipex.diff
+@@ -0,0 +1,19 @@
++diff --git a/csrc/cpu/jit/passes/concat_linear.cpp b/csrc/cpu/jit/passes/concat_linear.cpp
++index e5eee46cb..6a009d46e 100644
++--- a/csrc/cpu/jit/passes/concat_linear.cpp
+++++ b/csrc/cpu/jit/passes/concat_linear.cpp
++@@ -310,6 +310,14 @@ class ConcatLinearLayers {
++ bool FrozenConcatLinear(
++     std::shared_ptr<Graph>& graph,
++     std::unordered_set<Node*>& aten_linear) {
+++  auto envar = std::getenv("CONCAT_LINEAR");
+++  if (envar) {
+++    if (strcmp(envar, "0") == 0) {
+++      printf("no concat linear\n");
+++      return false;
+++    }
+++  }
+++  printf("concat linear\n");
++   ConcatLinearLayers concatLayers(graph);
++   GRAPH_DUMP("Before FrozenConcatLinear", graph);
++   bool changed = concatLayers.run(aten_linear);
