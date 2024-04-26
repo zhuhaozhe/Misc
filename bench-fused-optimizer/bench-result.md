@@ -35,22 +35,21 @@
 
 From chatGPT:
 
-### Performance Analysis of `compiled_single_tensor_adam`
+1. **Comparison between Implementations**:
+   - `_fused_adam` consistently outperforms both `compiled_single_tensor_adam` and `_single_tensor_adam`. This highlights the efficiency of the fused version across different parameter configurations.
 
-#### Good Performance:
-- When the number of parameters is small (e.g., 1 or 2) and the parameter size is relatively small (e.g., 16384), `compiled_single_tensor_adam` tends to have good performance compared to the other methods. For example, at 1 parameter and 16384 size, `compiled_single_tensor_adam` performs the best.
-- For larger parameter sizes (e.g., 65536 or 262144), `compiled_single_tensor_adam` still shows good performance, especially when the number of parameters is small.
-- Generally, `compiled_single_tensor_adam` performs well when dealing with smaller datasets or models.
+2. **Impact of Parameter Size**:
+   - Larger parameter sizes result in longer iteration times for all implementations. This aligns with the expected increase in computation as model complexity grows.
 
-#### Poor Performance:
-- As the number of parameters increases, especially beyond 16, and the parameter size becomes larger, the performance of `compiled_single_tensor_adam` relative to the other methods deteriorates.
-- At higher parameter sizes (e.g., 1048576 or 4194304), `compiled_single_tensor_adam` tends to have poorer performance, even with a smaller number of parameters.
+3. **Impact of Number of Parameters**:
+   - Increasing the number of parameters also leads to longer iteration times across all implementations. This demonstrates the scalability challenges associated with larger models.
 
-#### Factors Affecting Performance:
-- The performance of `compiled_single_tensor_adam` is likely influenced by factors such as memory bandwidth, cache size, and CPU architecture.
-- Larger parameter sizes may lead to increased memory access times and cache misses, impacting the performance of compiled operations.
-- The overhead of compiling operations may become significant when dealing with larger parameter sizes and numbers, leading to relatively poorer performance compared to the non-compiled versions.
+4. **Comparison between `compiled_single_tensor_adam` and `_single_tensor_adam`**:
+   - While `compiled_single_tensor_adam` generally performs better than `_single_tensor_adam`, both lag behind `_fused_adam`. This suggests potential optimization opportunities for both non-fused implementations.
 
-#### Recommendation:
-- For small models or datasets, especially with fewer parameters, `compiled_single_tensor_adam` can provide performance benefits.
-- However, for larger models with many parameters, it's essential to consider the trade-offs between the compilation overhead and the actual computation time. In such cases, the non-compiled versions (`_single_tensor_adam` and `_fused_adam`) might offer better overall performance.
+5. **Non-linear Increase in Iteration Time**:
+   - There's a non-linear relationship between iteration time and both parameter size and count. This indicates that the computation complexity grows faster than linearly with the size and count of parameters.
+
+6. **Optimization Opportunities**:
+   - Given the performance gap between non-fused and fused implementations, further optimization efforts could be beneficial. Exploring optimizations tailored to the non-fused implementations could help narrow this gap and improve overall performance.
+
