@@ -35,21 +35,27 @@
 
 From chatGPT:
 
-1. **Comparison between Implementations**:
-   - `_fused_adam` consistently outperforms both `compiled_single_tensor_adam` and `_single_tensor_adam`. This highlights the efficiency of the fused version across different parameter configurations.
+### When `compiled_single_tensor_adam` performs well:
 
-2. **Impact of Parameter Size**:
-   - Larger parameter sizes result in longer iteration times for all implementations. This aligns with the expected increase in computation as model complexity grows.
+- **Small to Medium-Sized Models**:
+  - `compiled_single_tensor_adam` tends to perform well with small to medium-sized models where the computational overhead is manageable. In these cases, the benefits of the compiled optimization outweigh any potential drawbacks.
 
-3. **Impact of Number of Parameters**:
-   - Increasing the number of parameters also leads to longer iteration times across all implementations. This demonstrates the scalability challenges associated with larger models.
+- **Low to Moderate Parameter Counts**:
+  - When the number of parameters is low to moderate, `compiled_single_tensor_adam` can efficiently handle the optimization process without significant overhead. This is especially true when the parameter count doesn't result in excessive memory usage or computational complexity.
 
-4. **Comparison between `compiled_single_tensor_adam` and `_single_tensor_adam`**:
-   - While `compiled_single_tensor_adam` generally performs better than `_single_tensor_adam`, both lag behind `_fused_adam`. This suggests potential optimization opportunities for both non-fused implementations.
+- **Regularly Executed Code Paths**:
+  - If the code paths optimized by `compiled_single_tensor_adam` are frequently executed, the upfront compilation cost can be amortized over multiple invocations, leading to improved performance over time.
 
-5. **Non-linear Increase in Iteration Time**:
-   - There's a non-linear relationship between iteration time and both parameter size and count. This indicates that the computation complexity grows faster than linearly with the size and count of parameters.
+### When `compiled_single_tensor_adam` may struggle:
 
-6. **Optimization Opportunities**:
-   - Given the performance gap between non-fused and fused implementations, further optimization efforts could be beneficial. Exploring optimizations tailored to the non-fused implementations could help narrow this gap and improve overall performance.
+- **Large Models with High Parameter Counts**:
+  - `compiled_single_tensor_adam` might struggle with large models containing a high number of parameters. The overhead of compiling the optimization process for such models could outweigh the benefits, leading to longer initialization times and potentially suboptimal performance during runtime.
 
+- **Infrequently Executed Code Paths**:
+  - If the code paths optimized by `compiled_single_tensor_adam` are rarely executed, the upfront compilation cost may not be justified, and the performance benefits might not be realized. In such cases, the overhead of compilation could outweigh any gains from optimization.
+
+- **Dynamic or Changing Model Architectures**:
+  - Models with dynamic or frequently changing architectures may not be well-suited for `compiled_single_tensor_adam`. The upfront compilation process assumes a fixed model structure, making it less adaptable to dynamic changes during runtime.
+
+- **Limited Memory Resources**:
+  - If the system has limited memory resources, the additional memory required for the compiled optimization process could strain the system, leading to performance degradation or even out-of-memory errors.
